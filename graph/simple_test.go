@@ -17,7 +17,9 @@ limitations under the License.
 package graph
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -165,6 +167,62 @@ func TestAddEdge(t *testing.T) {
 	err = sgraph.AddEdge("B", "C")
 	assert.Nil(err)
 
+}
+
+// TestAdjConcurrent is a regression test for issue #232: Adj takes a
+// read lock and then calls Degree, which takes a second read lock. If a
+// writer (AddEdge) queues for the write lock between the two read locks,
+// the RWMutex blocks all subsequent read lock acquisitions until the
+// writer finishes — but the writer is itself blocked by Adj's first read
+// lock, deadlocking every goroutine involved. Adj must not re-acquire
+// the mutex (it delegates to the lock-free degree helper instead).
+func TestAdjConcurrent(t *testing.T) {
+	assert := assert.New(t)
+	sgraph := NewSimpleGraph()
+	sgraph.AddEdge("A", "B")
+
+	// Spawn a writer and many concurrent readers to force a writer to
+	// queue between Adj's read lock and the (former) Degree read lock.
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					adj, err := sgraph.Adj("A")
+					assert.Nil(err)
+					assert.Contains(adj, "B")
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 1000; j++ {
+			sgraph.AddEdge("A", "C")
+			sgraph.AddEdge("A", "D")
+		}
+		close(done)
+	}()
+
+	finished := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(finished)
+	}()
+
+	select {
+	case <-finished:
+	case <-time.After(30 * time.Second):
+		assert.FailNow("deadlock detected: concurrent Adj/AddEdge calls did not finish")
+	}
 }
 
 func TestAdj(t *testing.T) {

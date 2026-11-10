@@ -91,7 +91,7 @@ func (g *SimpleGraph) Adj(v interface{}) ([]interface{}, error) {
 	g.mutex.RLock()
 	defer g.mutex.RUnlock()
 
-	deg, err := g.Degree(v)
+	deg, err := g.degree(v)
 	if err != nil {
 		return nil, ErrVertexNotFound
 	}
@@ -110,6 +110,12 @@ func (g *SimpleGraph) Degree(v interface{}) (int, error) {
 	g.mutex.RLock()
 	defer g.mutex.RUnlock()
 
+	return g.degree(v)
+}
+
+// degree returns the number of vertices connected to v.
+// The caller must hold g.mutex (read or write lock).
+func (g *SimpleGraph) degree(v interface{}) (int, error) {
 	val, ok := g.adjacencyList[v]
 	if !ok {
 		return 0, ErrVertexNotFound
