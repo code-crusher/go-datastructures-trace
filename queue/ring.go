@@ -95,22 +95,24 @@ L:
 
 		n = &rb.nodes[pos&rb.mask]
 		seq := atomic.LoadUint64(&n.position)
-		switch dif := seq - pos; {
+		switch dif := int64(seq) - int64(pos); {
 		case dif == 0:
 			if atomic.CompareAndSwapUint64(&rb.queue, pos, pos+1) {
 				break L
 			}
+			// another producer claimed this position first; retry
+			pos = atomic.LoadUint64(&rb.queue)
 		case dif < 0:
-			panic(`Ring buffer in a compromised state during a put operation.`)
+			// the queue is full
+			if offer {
+				return false, nil
+			}
+
+			runtime.Gosched() // free up the cpu before the next iteration
 		default:
+			// another producer has advanced the queue; reload the position
 			pos = atomic.LoadUint64(&rb.queue)
 		}
-
-		if offer {
-			return false, nil
-		}
-
-		runtime.Gosched() // free up the cpu before the next iteration
 	}
 
 	n.data = item

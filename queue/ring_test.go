@@ -150,6 +150,64 @@ func TestOffer(t *testing.T) {
 	assert.Equal(t, "bar", item)
 }
 
+func TestRingOfferConcurrent(t *testing.T) {
+	size := 256
+	numGoroutines := 8
+
+	rb := NewRingBuffer(uint64(size * numGoroutines))
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for el := 1; el <= size; el++ {
+				ok, err := rb.Offer(el)
+				assert.Nil(t, err)
+				assert.True(t, ok)
+			}
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, uint64(size*numGoroutines), rb.Len())
+}
+
+func TestRingOfferConcurrentFull(t *testing.T) {
+	capacity := uint64(64)
+	numGoroutines := 8
+	offersPerGoroutine := 32
+
+	rb := NewRingBuffer(capacity)
+
+	var (
+		wg        sync.WaitGroup
+		succeeded uint64
+	)
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < offersPerGoroutine; j++ {
+				ok, err := rb.Offer(j)
+				assert.Nil(t, err)
+				if ok {
+					atomic.AddUint64(&succeeded, 1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Exactly the capacity worth of offers should have succeeded; the rest
+	// must have been rejected because the queue was genuinely full.
+	assert.Equal(t, capacity, atomic.LoadUint64(&succeeded))
+	assert.Equal(t, capacity, rb.Len())
+}
+
 func TestRingGetEmpty(t *testing.T) {
 	rb := NewRingBuffer(3)
 
