@@ -280,6 +280,26 @@ func (tree *tree) applyNode(n *node, adds, deletes []*keyBundle) {
 	}
 }
 
+// propagateMbr grows the mbrs of n's ancestors to account for a leaf
+// whose mbr grew due to an insert.  Search descends the tree by
+// intersecting mbrs, so a stale ancestor mbr can hide otherwise valid
+// entries.  Deletes can only shrink a node's mbr, so only the insert
+// path needs to propagate.
+func (tree *tree) propagateMbr(n *node) {
+	if !n.isLeaf {
+		return
+	}
+
+	mbr := n.mbr
+	for parent := n.parent; parent != nil; parent = parent.parent {
+		if containsRect(parent.mbr, mbr) {
+			break
+		}
+
+		parent.mbr.adjust(mbr)
+	}
+}
+
 func (tree *tree) recursiveMutate(adds, deletes map[*node][]*keyBundle, setRoot, inParallel bool) {
 	if len(adds) == 0 && len(deletes) == 0 {
 		return
@@ -347,6 +367,13 @@ func (tree *tree) recursiveMutate(adds, deletes map[*node][]*keyBundle, setRoot,
 		}
 
 		tree.applyNode(n, adds, deletes)
+		if inParallel {
+			write.Lock()
+			tree.propagateMbr(n)
+			write.Unlock()
+		} else {
+			tree.propagateMbr(n)
+		}
 
 		if n.needsSplit(tree.ary) {
 			keys := make(hilberts, 0, n.keys.len())

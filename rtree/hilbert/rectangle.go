@@ -22,6 +22,14 @@ type rectangle struct {
 	xlow, xhigh, ylow, yhigh int32
 }
 
+func (r *rectangle) LowerLeft() (int32, int32) {
+	return r.xlow, r.ylow
+}
+
+func (r *rectangle) UpperRight() (int32, int32) {
+	return r.xhigh, r.yhigh
+}
+
 func (r *rectangle) adjust(rect rtree.Rectangle) {
 	x, y := rect.LowerLeft()
 	if x < r.xlow {
@@ -56,6 +64,12 @@ func intersect(rect1 *rectangle, rect2 rtree.Rectangle) bool {
 	xlow2, ylow2 := rect2.LowerLeft()
 
 	return xhigh2 >= rect1.xlow && xlow2 <= rect1.xhigh && yhigh2 >= rect1.ylow && ylow2 <= rect1.yhigh
+}
+
+// containsRect determines whether rect1 fully contains rect2.
+func containsRect(rect1 *rectangle, rect2 *rectangle) bool {
+	return rect1.xlow <= rect2.xlow && rect1.xhigh >= rect2.xhigh &&
+		rect1.ylow <= rect2.ylow && rect1.yhigh >= rect2.yhigh
 }
 
 func newRectangeFromRect(rect rtree.Rectangle) *rectangle {

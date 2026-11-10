@@ -237,6 +237,7 @@ func (n *node) insert(kb *keyBundle) rtree.Rectangle {
 	n.keys.insertAt(i, kb.key)
 	if n.isLeaf {
 		n.nodes.insertAt(i, kb.left)
+		n.mbr.adjust(kb.left)
 	} else {
 		if n.nodes.len() == 0 {
 			n.nodes.push(kb.left)
@@ -268,6 +269,13 @@ func (n *node) delete(kb *keyBundle) rtree.Rectangle {
 	old := n.nodes.list[i]
 	n.keys.deleteAt(i)
 	n.nodes.deleteAt(i)
+	if n.keys.len() == 0 {
+		n.maxHilbert = 0
+		n.mbr = &rectangle{}
+	} else {
+		n.maxHilbert = n.keys.last()
+		n.mbr = newRectangleFromRects(n.nodes.list)
+	}
 	return old
 }
 

@@ -396,6 +396,82 @@ func TestInsertDuplicateRect(t *testing.T) {
 	assert.Equal(t, rtree.Rectangles{r2}, result)
 }
 
+func TestTreeStateAfterInsertDeleteIsRectIndependent(t *testing.T) {
+	// The tree's state after an insert followed by a delete of the
+	// same rect should not depend on the rect involved.  See #215.
+	for _, r := range []rtree.Rectangle{
+		newMockRectangle(0, 0, 0, 0),
+		newMockRectangle(0, 0, 10, 10),
+		newMockRectangle(-15, -7, 42, 99),
+	} {
+		tree := newTree(8, 8)
+		tree.Insert(r)
+		tree.Delete(r)
+
+		assert.Equal(t, uint64(0), tree.Len())
+		assert.Equal(t, hilbert(0), tree.root.maxHilbert)
+		assert.Equal(t, &rectangle{}, tree.root.mbr)
+		result := tree.Search(constructInfiniteRect())
+		assert.Len(t, result, 0)
+	}
+}
+
+func TestInsertAfterSplitIsSearchable(t *testing.T) {
+	// A node's mbr is only computed on split; inserts into a leaf
+	// after that leaf has split must still be reachable by search
+	// through the parent.  See #215.
+	points := constructMockPoints(6)
+	tree := newTree(3, 3)
+	tree.Insert(points...)
+	assert.Equal(t, uint64(6), tree.Len())
+
+	far := newMockRectangle(100, 100, 100, 100)
+	tree.Insert(far)
+	assert.Equal(t, uint64(7), tree.Len())
+
+	q := newMockRectangle(90, 90, 110, 110)
+	result := tree.Search(q)
+	assert.Equal(t, rtree.Rectangles{far}, result)
+}
+
+func TestInsertAfterDeepSplitIsSearchable(t *testing.T) {
+	// Ancestors' mbrs must also grow when a leaf's mbr grows, or
+	// search descending from the root prunes the entry.  See #215.
+	points := constructMockPoints(9)
+	tree := newTree(3, 3)
+	tree.Insert(points...)
+	assert.Equal(t, uint64(9), tree.Len())
+
+	far := newMockRectangle(1000, 1000, 1000, 1000)
+	tree.Insert(far)
+	assert.Equal(t, uint64(10), tree.Len())
+
+	q := newMockRectangle(990, 990, 1010, 1010)
+	result := tree.Search(q)
+	assert.Equal(t, rtree.Rectangles{far}, result)
+}
+
+func TestInsertDeleteRebalanceSequence(t *testing.T) {
+	// Exercises insert-after-delete on a tree that previously split;
+	// deletion must reset node state so subsequent searches see the
+	// new inserts.  See #215.
+	points := constructMockPoints(9)
+	tree := newTree(3, 3)
+	tree.Insert(points...)
+
+	tree.Delete(points[8])
+	tree.Insert(newMockRectangle(2000, 0, 2000, 0))
+
+	q := newMockRectangle(1990, 0, 2010, 10)
+	result := tree.Search(q)
+	assert.Len(t, result, 1)
+
+	// everything else must still be searchable
+	q = newMockRectangle(0, 0, math.MaxInt32, math.MaxInt32)
+	result = tree.Search(q)
+	assert.Len(t, result, 9)
+}
+
 func BenchmarkBulkAddPoints(b *testing.B) {
 	numItems := 1000
 	points := constructMockPoints(numItems)
