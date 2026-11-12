@@ -71,9 +71,23 @@ func emptyNode(level uint8, capacity int) *node {
 	return &node{entries: make([]Entry, capacity), level: level}
 }
 
+// copy returns a shallow copy of the node whose entries slice is independent
+// of the original. This is used to preserve the persistence of the trie:
+// modifications must never be visible to other versions of the trie.
+func (n *node) copy() *node {
+	entries := make([]Entry, len(n.entries))
+	copy(entries, n.entries)
+	return &node{
+		entries: entries,
+		nodeMap: n.nodeMap,
+		dataMap: n.dataMap,
+		level:   n.level,
+	}
+}
+
 func insert(n *node, entry Entry) *node {
 	index := uint(mask(entry.KeyHash(), n.level))
-	newNode := n
+	newNode := n.copy()
 	if newNode.level == 6 { // handle hash collisions on 6th level
 		if newNode.entries[index] == nil {
 			newNode.entries[index] = entry
@@ -92,8 +106,13 @@ func insert(n *node, entry Entry) *node {
 			newNode.dataMap = newNode.dataMap.ClearBit(index)
 			return newNode
 		}
-		cNode := newNode.entries[index].(*collisionNode)
-		cNode.entries = append(cNode.entries, entry)
+		// Copy the collision node so that existing versions of the trie are
+		// not affected by the append.
+		old := newNode.entries[index].(*collisionNode)
+		entries := make([]Entry, len(old.entries)+1)
+		copy(entries, old.entries)
+		entries[len(old.entries)] = entry
+		newNode.entries[index] = &collisionNode{entries: entries}
 		return newNode
 	}
 	if !newNode.dataMap.GetBit(index) && !newNode.nodeMap.GetBit(index) { // insert directly
@@ -128,7 +147,12 @@ func insert(n *node, entry Entry) *node {
 func get(n *node, keyHash uint32, key interface{}) Entry {
 	index := uint(mask(keyHash, n.level))
 	if n.dataMap.GetBit(index) {
-		return n.entries[index]
+		// The slot is occupied, but it may hold an entry with a different key
+		// that happens to share this index.
+		if e := n.entries[index]; e != nil && e.Key() == key {
+			return e
+		}
+		return nil
 	}
 	if n.nodeMap.GetBit(index) {
 		return get(n.entries[index].(*node), keyHash, key)
@@ -149,10 +173,14 @@ func get(n *node, keyHash uint32, key interface{}) Entry {
 
 func remove(n *node, keyHash uint32, key interface{}) *node {
 	index := uint(mask(keyHash, n.level))
-	newNode := n
+	newNode := n.copy()
 	if n.dataMap.GetBit(index) {
-		newNode.entries[index] = nil
-		newNode.dataMap = newNode.dataMap.ClearBit(index)
+		// The slot may hold an entry with a different key that happens to
+		// share this index; only remove it if the key matches.
+		if e := n.entries[index]; e != nil && e.Key() == key {
+			newNode.entries[index] = nil
+			newNode.dataMap = newNode.dataMap.ClearBit(index)
+		}
 		return newNode
 	}
 	if n.nodeMap.GetBit(index) {
@@ -170,18 +198,21 @@ func remove(n *node, keyHash uint32, key interface{}) *node {
 			newNode.entries[index] = e
 			newNode.nodeMap = newNode.nodeMap.ClearBit(index)
 			newNode.dataMap = newNode.dataMap.SetBit(index)
+			return newNode
 		}
 		newNode.entries[index] = subNode
 		return newNode
 	}
 	if n.level == 6 { // delete from collisionNode
-		cNode := newNode.entries[index].(*collisionNode)
-		for i, e := range cNode.entries {
-			if e.Key() == key {
-				cNode.entries = append(cNode.entries[:i], cNode.entries[i+1:]...)
-				break
+		old := newNode.entries[index].(*collisionNode)
+		entries := make([]Entry, 0, len(old.entries))
+		for _, e := range old.entries {
+			if e.Key() != key {
+				entries = append(entries, e)
 			}
 		}
+		cNode := &collisionNode{entries: entries}
+		newNode.entries[index] = cNode
 		// compress if only 1 entry exists in collisionNode
 		if len(cNode.entries) == 1 {
 			newNode.entries[index] = cNode.entries[0]

@@ -27,6 +27,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 package dtrie
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -132,6 +133,117 @@ func TestSize(t *testing.T) {
 	n := insertTest(t, defaultHasher, 10000)
 	d := &Dtrie{n, defaultHasher}
 	assert.Equal(t, 10000, d.Size())
+}
+
+func TestPersistentInsert(t *testing.T) {
+	t0 := New(nil)
+	t1 := t0.Insert("a", "b")
+	t2 := t1.Insert("c", "d")
+
+	assert.Equal(t, 0, t0.Size())
+	assert.Equal(t, 1, t1.Size())
+	assert.Equal(t, 2, t2.Size())
+
+	assert.Nil(t, t0.Get("a"))
+	assert.Nil(t, t0.Get("c"))
+	assert.Equal(t, "b", t1.Get("a"))
+	assert.Nil(t, t1.Get("c"))
+	assert.Equal(t, "b", t2.Get("a"))
+	assert.Equal(t, "d", t2.Get("c"))
+}
+
+func TestPersistentUpdate(t *testing.T) {
+	t0 := New(nil).Insert("a", "b")
+	t1 := t0.Insert("a", "c")
+
+	assert.Equal(t, "b", t0.Get("a"))
+	assert.Equal(t, "c", t1.Get("a"))
+}
+
+func TestPersistentRemove(t *testing.T) {
+	t0 := New(nil).Insert("a", "b")
+	t1 := t0.Remove("a")
+
+	assert.Equal(t, "b", t0.Get("a"))
+	assert.Equal(t, 1, t0.Size())
+	assert.Nil(t, t1.Get("a"))
+	assert.Equal(t, 0, t1.Size())
+}
+
+func TestPersistentInsertWithHashCollisions(t *testing.T) {
+	t0 := New(collisionHash)
+	t1 := t0.Insert("a", "b")
+	t2 := t1.Insert("c", "d")
+
+	assert.Equal(t, 0, t0.Size())
+	assert.Equal(t, 1, t1.Size())
+	assert.Equal(t, 2, t2.Size())
+
+	assert.Nil(t, t0.Get("c"))
+	assert.Nil(t, t1.Get("c"))
+	assert.Equal(t, "d", t2.Get("c"))
+}
+
+func TestPersistentRemoveWithHashCollisions(t *testing.T) {
+	t0 := New(collisionHash).Insert("a", "b").Insert("c", "d")
+	t1 := t0.Remove("a")
+
+	assert.Equal(t, "b", t0.Get("a"))
+	assert.Equal(t, "d", t0.Get("c"))
+	assert.Equal(t, 2, t0.Size())
+	assert.Nil(t, t1.Get("a"))
+	assert.Equal(t, "d", t1.Get("c"))
+	assert.Equal(t, 1, t1.Size())
+}
+
+func TestGetMissingKeyInOccupiedSlot(t *testing.T) {
+	// 0 and 32 share an index at level 0. Looking up a key that was never
+	// inserted must return nil rather than the unrelated entry in that slot.
+	d := New(nil).Insert(0, "zero")
+
+	assert.Nil(t, d.Get(32))
+	assert.Equal(t, "zero", d.Get(0))
+}
+
+func TestRemoveMissingKeyInOccupiedSlot(t *testing.T) {
+	d := New(nil).Insert(0, "zero")
+	d = d.Remove(32)
+
+	assert.Equal(t, "zero", d.Get(0))
+	assert.Equal(t, 1, d.Size())
+}
+
+func TestRemoveCompressesSubNode(t *testing.T) {
+	// 0 and 32 share the same index at level 0, forcing a sub-node.
+	d := New(nil).Insert(0, "zero").Insert(32, "thirty-two")
+	d = d.Remove(0)
+
+	assert.Nil(t, d.Get(0))
+	assert.Equal(t, "thirty-two", d.Get(32))
+	assert.Equal(t, 1, d.Size())
+}
+
+func TestConcurrentInsert(t *testing.T) {
+	base := New(nil)
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			d := base
+			for i := 0; i < 1000; i++ {
+				d = d.Insert(i, g)
+			}
+			assert.Equal(t, 1000, d.Size())
+			for i := 0; i < 1000; i++ {
+				assert.Equal(t, g, d.Get(i))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// The original trie must be unaffected by any of the inserts.
+	assert.Equal(t, 0, base.Size())
 }
 
 func BenchmarkInsert(b *testing.B) {
