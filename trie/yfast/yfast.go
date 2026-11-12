@@ -180,17 +180,25 @@ func (yfast *YFastTrie) Len() uint64 {
 }
 
 func (yfast *YFastTrie) successor(key uint64) Entry {
-	bundle := yfast.xfast.Successor(key)
-	if bundle == nil {
-		return nil
+	// The x-fast trie stores each bucket's maximum as its
+	// representative, so a matching bundle may still have no entry
+	// equal to or greater than the key.  In that case the successor
+	// is the first entry of a later bundle, so walk the bundles until
+	// one contains it.
+	iter := yfast.xfast.Iter(key)
+	for iter.Next() {
+		bundle, ok := iter.Value().(*entriesWrapper)
+		if !ok {
+			return nil
+		}
+
+		entry, _ := bundle.entries.successor(key)
+		if entry != nil {
+			return entry
+		}
 	}
 
-	entry, _ := bundle.(*entriesWrapper).entries.successor(key)
-	if entry == nil {
-		return nil
-	}
-
-	return entry
+	return nil
 }
 
 // Successor returns an Entry with a key equal to or immediately
