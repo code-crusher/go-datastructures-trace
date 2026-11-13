@@ -184,6 +184,221 @@ func TestRingPollEmpty(t *testing.T) {
 	assert.Equal(t, ErrTimeout, err)
 }
 
+// TestRingOfferWhenFull ensures Offer reports a full buffer and that freeing a
+// slot lets the next offer succeed.  Offer is the non-blocking put, so it must
+// never park or spin on a full buffer.
+func TestRingOfferWhenFull(t *testing.T) {
+	rb := NewRingBuffer(4)
+
+	for i := 0; i < 4; i++ {
+		ok, err := rb.Offer(i)
+		assert.True(t, ok)
+		assert.Nil(t, err)
+	}
+
+	done := make(chan struct{})
+	var ok bool
+	var err error
+	go func() {
+		ok, err = rb.Offer("full")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		assert.False(t, ok)
+		assert.Nil(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Offer on a full buffer did not return")
+	}
+	assert.Equal(t, uint64(4), rb.Len())
+
+	// Freeing a slot makes the next offer succeed.
+	_, err = rb.Get()
+	assert.Nil(t, err)
+	ok, err = rb.Offer("after")
+	assert.True(t, ok)
+	assert.Nil(t, err)
+}
+
+// TestRingBlockedGetDoesNotSpin ensures a Get blocked on an empty buffer is
+// parked rather than busy-waiting.  The goroutine must consume essentially no
+// CPU while it waits; a spinning implementation would burn a core for the
+// duration of the test.  See issue #150.
+func TestRingBlockedGetDoesNotSpin(t *testing.T) {
+	rb := NewRingBuffer(3)
+
+	blocked := make(chan struct{})
+	result := make(chan interface{}, 1)
+	go func() {
+		close(blocked)
+		item, err := rb.Get()
+		assert.Nil(t, err)
+		result <- item
+	}()
+
+	<-blocked
+	time.Sleep(50 * time.Millisecond) // give the getter time to park
+
+	// A parked goroutine uses no measurable CPU.  Sample the process CPU
+	// usage over a window; a busy loop would consume ~one core.
+	if before, ok := processCPUTime(); ok {
+		time.Sleep(100 * time.Millisecond)
+		after, _ := processCPUTime()
+		used := after - before
+		// Allow generous slack for CI noise and background test goroutines;
+		// a spinning implementation would consume ~100ms here.
+		assert.Less(t, used, 50*time.Millisecond,
+			"blocked Get consumed %v of CPU over 100ms; it appears to be spinning", used)
+	} else {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	rb.Put("hello")
+	assert.Equal(t, "hello", <-result)
+}
+
+// TestRingBlockedPutDoesNotSpin is the put-side counterpart to
+// TestRingBlockedGetDoesNotSpin.
+func TestRingBlockedPutDoesNotSpin(t *testing.T) {
+	rb := NewRingBuffer(2)
+	assert.Nil(t, rb.Put(1)) // fill the buffer
+	assert.Nil(t, rb.Put(2))
+
+	blocked := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(blocked)
+		done <- rb.Put(3)
+	}()
+
+	<-blocked
+	time.Sleep(50 * time.Millisecond) // give the putter time to park
+
+	if before, ok := processCPUTime(); ok {
+		time.Sleep(100 * time.Millisecond)
+		after, _ := processCPUTime()
+		used := after - before
+		assert.Less(t, used, 50*time.Millisecond,
+			"blocked Put consumed %v of CPU over 100ms; it appears to be spinning", used)
+	} else {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	item, err := rb.Get()
+	assert.Nil(t, err)
+	assert.Equal(t, 1, item)
+	assert.Nil(t, <-done)
+}
+
+// TestRingBlockedGetWakesOnPut ensures a parked getter is woken promptly by a
+// put rather than waiting for a poll interval.
+func TestRingBlockedGetWakesOnPut(t *testing.T) {
+	rb := NewRingBuffer(3)
+
+	result := make(chan interface{}, 1)
+	go func() {
+		item, err := rb.Get()
+		assert.Nil(t, err)
+		result <- item
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let the getter park
+	start := time.Now()
+	assert.Nil(t, rb.Put("wake"))
+	assert.Equal(t, "wake", <-result)
+	assert.Less(t, time.Since(start), 50*time.Millisecond,
+		"put did not promptly wake a blocked get")
+}
+
+// TestRingBlockedPutWakesOnGet ensures a parked putter is woken promptly by a
+// get rather than waiting for a poll interval.
+func TestRingBlockedPutWakesOnGet(t *testing.T) {
+	rb := NewRingBuffer(2)
+	assert.Nil(t, rb.Put(1))
+	assert.Nil(t, rb.Put(2))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- rb.Put(3)
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let the putter park
+	start := time.Now()
+	item, err := rb.Get()
+	assert.Nil(t, err)
+	assert.Equal(t, 1, item)
+	assert.Nil(t, <-done)
+	assert.Less(t, time.Since(start), 50*time.Millisecond,
+		"get did not promptly wake a blocked put")
+}
+
+// TestRingPollTimeoutWhileParked ensures a poller that has parked (past the
+// spin phase) still returns ErrTimeout on schedule, and that the timed-out
+// waiter does not interfere with later operations.
+func TestRingPollTimeoutWhileParked(t *testing.T) {
+	rb := NewRingBuffer(8)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			before := time.Now()
+			_, err := rb.Poll(100 * time.Millisecond)
+			assert.Equal(t, ErrTimeout, err)
+			// The spin phase is bounded, so the timeout must be honored
+			// closely rather than after an unbounded spin.
+			assert.Less(t, time.Since(before), time.Second)
+		}()
+	}
+	wg.Wait()
+
+	// The buffer must still work normally after timed-out waiters leave.
+	assert.Nil(t, rb.Put("after-timeout"))
+	item, err := rb.Get()
+	assert.Nil(t, err)
+	assert.Equal(t, "after-timeout", item)
+}
+
+// TestRingDisposeWakesBlockedPut ensures Dispose releases a goroutine blocked
+// on a full buffer.
+func TestRingDisposeWakesBlockedPut(t *testing.T) {
+	rb := NewRingBuffer(2)
+	assert.Nil(t, rb.Put(1)) // full, so the putter will block
+	assert.Nil(t, rb.Put(2))
+
+	putErr := make(chan error, 1)
+	go func() { putErr <- rb.Put(3) }()
+	time.Sleep(20 * time.Millisecond)
+
+	rb.Dispose()
+
+	select {
+	case err := <-putErr:
+		assert.Equal(t, ErrDisposed, err)
+	case <-time.After(time.Second):
+		t.Fatal("blocked Put was not woken by Dispose")
+	}
+}
+
+func TestRingDisposeWakesBlockedGet(t *testing.T) {
+	rb := NewRingBuffer(2)
+
+	getErr := make(chan error, 1)
+	go func() { _, err := rb.Get(); getErr <- err }()
+	time.Sleep(20 * time.Millisecond)
+
+	rb.Dispose()
+
+	select {
+	case err := <-getErr:
+		assert.Equal(t, ErrDisposed, err)
+	case <-time.After(time.Second):
+		t.Fatal("blocked Get was not woken by Dispose")
+	}
+}
+
 func TestRingPoll(t *testing.T) {
 	rb := NewRingBuffer(10)
 
