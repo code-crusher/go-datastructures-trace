@@ -384,6 +384,12 @@ func TestDeleteAllDuplicateHilbert(t *testing.T) {
 	assert.Len(t, result, 0)
 }
 
+func TestNewWithAryLessThanThreePanics(t *testing.T) {
+	assert.Panics(t, func() {
+		New(100, 2)
+	})
+}
+
 func TestInsertDuplicateRect(t *testing.T) {
 	r1 := newMockRectangle(0, 0, 20, 20)
 	r2 := newMockRectangle(0, 0, 20, 20)

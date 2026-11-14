@@ -114,6 +114,10 @@ func (tree *tree) checkAndRun(action action) {
 }
 
 func (tree *tree) init(bufferSize, ary uint64) {
+	if ary < 3 {
+		panic(`ary must be at least 3`)
+	}
+
 	tree.bufferSize = bufferSize
 	tree.ary = ary
 	tree.cache = make([]interface{}, 0, bufferSize)
@@ -426,6 +430,14 @@ func newTree(bufferSize, ary uint64) *tree {
 }
 
 // New will construct a new Hilbert R-Tree and return it.
+//
+// bufferSize is the number of operations that are buffered together
+// before they are flushed and applied to the tree.
+//
+// ary is the arity (branching factor) of the tree, that is, the maximum
+// number of entries a node may hold before it is split.  It must be at
+// least 3.  It is not the number of dimensions: this tree only supports
+// two-dimensional rectangles (see rtree.Rectangle).
 func New(bufferSize, ary uint64) rtree.RTree {
 	return newTree(bufferSize, ary)
 }
