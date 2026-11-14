@@ -103,6 +103,58 @@ func TestSimpleDelete(t *testing.T) {
 	assert.Len(t, result, 0)
 }
 
+func TestMoveRectangleDeleteThenInsert(t *testing.T) {
+	// The rtree.Rectangle contract requires that a rectangle's bounds be
+	// immutable once inserted.  A rectangle that needs to move must be
+	// deleted first and re-inserted with its new bounds (issue #214).
+	r1 := newMockRectangle(0, 0, 10, 10)
+	r2 := newMockRectangle(20, 20, 30, 30)
+	r3 := newMockRectangle(40, 40, 50, 50)
+	tree := newTree(3, 3)
+	tree.Insert(r1, r2, r3)
+	assert.Equal(t, uint64(3), tree.Len())
+
+	// Delete before mutating, so the tree is updated against the original
+	// bounds, then insert the moved rectangle.
+	tree.Delete(r3)
+	r3.xlow, r3.ylow, r3.xhigh, r3.yhigh = 0, 0, 5, 5
+	tree.Insert(r3)
+
+	assert.Equal(t, uint64(3), tree.Len())
+
+	// The moved rectangle is found at its new location and no longer
+	// found at its old location.
+	result := tree.Search(newMockRectangle(0, 0, 5, 5))
+	assert.Contains(t, result, r3)
+
+	result = tree.Search(newMockRectangle(40, 40, 50, 50))
+	assert.NotContains(t, result, r3)
+}
+
+func TestMutatingRectangleInPlaceIsNotReflected(t *testing.T) {
+	// Documenting the failure mode behind issue #214: mutating a rectangle
+	// in place after insertion leaves stale keys/MBRs in the tree, so the
+	// moved rectangle becomes unreachable.  Use Delete + Insert instead.
+	r1 := newMockRectangle(0, 0, 10, 10)
+	r2 := newMockRectangle(20, 20, 30, 30)
+	r3 := newMockRectangle(40, 40, 50, 50)
+	tree := newTree(3, 3)
+	tree.Insert(r1, r2, r3)
+
+	// Mutate r3 in place without deleting it first.
+	r3.xlow, r3.ylow, r3.xhigh, r3.yhigh = 0, 0, 5, 5
+
+	// A query at the new location misses r3 because the tree still keys it
+	// by its original center and bounds it by its original node MBR.
+	result := tree.Search(newMockRectangle(0, 0, 5, 5))
+	assert.NotContains(t, result, r3)
+
+	// The stale hilbert key also means Delete can no longer find it, so the
+	// entry leaks until the tree is disposed.
+	tree.Delete(r3)
+	assert.Equal(t, uint64(3), tree.Len())
+}
+
 func TestDeleteIdenticalHilbergNumber(t *testing.T) {
 	r1 := newMockRectangle(0, 0, 20, 20)
 	r2 := newMockRectangle(5, 5, 15, 15)

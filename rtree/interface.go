@@ -19,7 +19,13 @@ package rtree
 // Rectangles is a typed list of Rectangle.
 type Rectangles []Rectangle
 
-// Rectangle describes a two-dimensional bound.
+// Rectangle describes a two-dimensional bound.  It is expected that the
+// provided rectangle is immutable and that the values returned by
+// LowerLeft and UpperRight never change after the rectangle has been
+// inserted into a tree.  Mutating a rectangle in place will not be
+// reflected in the tree's internal structure and results in undefined
+// behavior.  To move a rectangle, first Delete it and then Insert it
+// again with its new bounds.
 type Rectangle interface {
 	// LowerLeft describes the lower left coordinate of this rectangle.
 	LowerLeft() (int32, int32)
