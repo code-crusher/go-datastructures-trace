@@ -76,6 +76,8 @@ I'd like to experiment with a ground-up implementation of a hash map using the s
 
 Golang's standard library "sort" includes a slice of ints that contain some sorting and searching functions.  This is like that standard library package but with Int64s, which requires a new package as Go doesn't want us to have generics.  I also added a method for inserting to the slice.
 
+A copy-on-write slice is also provided, inspired by Java's `java.util.concurrent.CopyOnWriteArrayList`.  It is efficient when the slice is read far more often than it is written: reads require no synchronization, while writes copy the underlying array before modifying it.
+
 ## Threadsafe
 
 This package just wraps some common interfaces with a lock to make them threadsafe.  Golang would tell us to forget about locks and use channels (even though channels themselves are just fancy abstractions around locks as evidenced in their source code) but I found some situations where I wanted to protect some memory that was accessible from multiple goroutines where channels would be ugly, slow, and unnecessary.  The only interface with an implemntation thusfar is error, which is useful if you need to indicate that an error was returned from logic running in any number of goroutines.
