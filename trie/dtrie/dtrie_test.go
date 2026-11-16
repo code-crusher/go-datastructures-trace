@@ -69,6 +69,33 @@ func getTest(t *testing.T, hashfunc func(interface{}) uint32, count int) {
 	}
 }
 
+func TestGetNonExistentKey(t *testing.T) {
+	d := New(nil)
+	assert.Nil(t, d.Get("missing"))
+
+	d = d.Insert("present", "value")
+	assert.Equal(t, "value", d.Get("present"))
+	assert.Nil(t, d.Get("missing"))
+}
+
+func TestGetNonExistentKeyWithCollisions(t *testing.T) {
+	d := New(collisionHash)
+	assert.Nil(t, d.Get("missing"))
+
+	d = d.Insert("present", "value")
+	assert.Equal(t, "value", d.Get("present"))
+	assert.Nil(t, d.Get("missing"))
+}
+
+func TestGetMaskedHashCollision(t *testing.T) {
+	// 1 and 33 hash to values that share the same low-order 5 bits, so they
+	// map to the same root index. Looking up a key that was never inserted
+	// must not return the value stored for another key.
+	d := New(nil).Insert(1, "one")
+	assert.Equal(t, "one", d.Get(1))
+	assert.Nil(t, d.Get(33))
+}
+
 func TestRemove(t *testing.T) {
 	removeTest(t, defaultHasher, 10000)
 	removeTest(t, collisionHash, 1000)

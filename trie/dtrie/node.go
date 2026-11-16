@@ -128,7 +128,12 @@ func insert(n *node, entry Entry) *node {
 func get(n *node, keyHash uint32, key interface{}) Entry {
 	index := uint(mask(keyHash, n.level))
 	if n.dataMap.GetBit(index) {
-		return n.entries[index]
+		// The entry at this index shares the masked hash bits with the key
+		// being looked up, but it may still be a different key.
+		if n.entries[index].Key() == key {
+			return n.entries[index]
+		}
+		return nil
 	}
 	if n.nodeMap.GetBit(index) {
 		return get(n.entries[index].(*node), keyHash, key)
