@@ -46,6 +46,8 @@ package xfast
 
 import "fmt"
 
+var debugDeletes = true
+
 // isInternal returns a bool indicating if the provided
 // node is an internal node, that is, non-leaf node.
 func isInternal(n *node) bool {
@@ -320,6 +322,11 @@ func (xft *XFastTrie) insert(entry Entry) {
 		// on 0th, this will be root
 		// find out if we need to go left or right
 		leftOrRight = (key & positions[xft.diff+i]) >> (xft.bits - 1 - i)
+		isLeafChild := false
+		childBefore := n.children[leftOrRight]
+		if childBefore != nil && isLeaf(childBefore) {
+			isLeafChild = true
+		}
 		if n.children[leftOrRight] == nil || isLeaf(n.children[leftOrRight]) {
 			var nn *node
 			if i < xft.bits-1 {
@@ -329,8 +336,13 @@ func (xft *XFastTrie) insert(entry Entry) {
 				xft.num++
 			}
 
+			if key == 1700000000998781183 {
+				fmt.Printf("DEBUG loop key=%d i=%d preexistingChild=%p isLeafChild=%v -> nn=%p entrySet=%v\n", key, i, childBefore, isLeafChild, nn, i == xft.bits-1)
+			}
 			n.children[leftOrRight] = nn
 			xft.layers[i][key&masks[xft.diff+i]] = nn // prefix for this layer
+		} else if key == 1700000000998781183 {
+			fmt.Printf("DEBUG loop key=%d i=%d reusing child %p (entry? %v)\n", key, i, n.children[leftOrRight], n.children[leftOrRight].entry != nil)
 		}
 
 		n = n.children[leftOrRight]
@@ -367,12 +379,23 @@ func (xft *XFastTrie) insert(entry Entry) {
 	// and predecessors.
 	xft.walkUpNode(root, n, predecessor, successor)
 
+	// final integrity check
+	if n.entry == nil {
+		fmt.Printf("DEBUG insert %d: final n (depth?) has nil entry; layer=%d max=%p\n", key, layer, xft.max)
+	}
+
 	// and then do a final check against the min/max indicies.
 	if xft.max == nil || key > xft.max.entry.Key() {
+		if xft.max != nil {
+			fmt.Printf("DEBUG insert %d: max %p (old key %d, entry? %+v) -> n %p (entry? %+v)\n", key, xft.max, xft.max.entry.Key(), xft.max.entry != nil, n, n.entry != nil)
+		}
 		xft.max = n
 	}
 
 	if xft.min == nil || key < xft.min.entry.Key() {
+		if xft.min != nil {
+			fmt.Printf("DEBUG insert %d: min %p (old key %d, entry? %+v) -> n %p (entry? %+v)\n", key, xft.min, xft.min.entry.Key(), xft.min.entry != nil, n, n.entry != nil)
+		}
 		xft.min = n
 	}
 }
@@ -485,10 +508,12 @@ func (xft *XFastTrie) delete(key uint64) {
 
 	// check max/min indices
 	if xft.max.entry.Key() == key {
+		fmt.Printf("DEBUG delete %d: max %p (key %d) -> predecessor %p (nil? %v)\n", key, xft.max, xft.max.entry.Key(), predecessor, predecessor == nil)
 		xft.max = predecessor
 	}
 
 	if xft.min.entry.Key() == key {
+		fmt.Printf("DEBUG delete %d: min %p (key %d) -> successor %p (nil? %v)\n", key, xft.min, xft.min.entry.Key(), successor, successor == nil)
 		xft.min = successor
 	}
 
@@ -544,6 +569,18 @@ func (xft *XFastTrie) successor(key uint64) *node {
 	if xft.root == nil || xft.min == nil { // no successor if no nodes
 		return nil
 	}
+	if xft.max == nil {
+		fmt.Printf("DEBUG successor: xft.max == nil, min nil? %v\n", xft.min == nil)
+		panic("xft.max nil")
+	}
+	if xft.max.entry == nil {
+		fmt.Printf("DEBUG successor: xft.max points to internal node %p (min entry nil? %v)\n", xft.max, xft.min.entry == nil)
+		panic("xft.max internal")
+	}
+	if xft.min != nil && xft.min.entry == nil {
+		fmt.Printf("DEBUG successor: xft.min points to internal node %p\n", xft.min)
+		panic("xft.min internal")
+	}
 
 	if key <= xft.min.entry.Key() {
 		return xft.min
@@ -552,6 +589,7 @@ func (xft *XFastTrie) successor(key uint64) *node {
 	if key > xft.max.entry.Key() {
 		return nil
 	}
+	_ = 0
 
 	n := xft.layers[xft.bits-1][key]
 	if n != nil {
